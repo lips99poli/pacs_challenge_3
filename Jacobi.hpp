@@ -6,6 +6,7 @@
 #include <Eigen/Dense>
 #include <functional>
 #include "mpi.h"
+#include <concepts>
 
 /* da fare: 
 - griglia della funzione così non la devo chiamare ed eseguire ogni volta!!
@@ -37,13 +38,11 @@ class Jacobi {
     // Solver parameters: maximum number of iteration, tolerance and number of points
     unsigned int maxIt;
     T tol;
-    unsigned int N;
+    unsigned int N; 
 
-    // Edge of the grid
+    // Edge of the grid (hp that it is a square grid)
     T x0 = 0.;
-    T y0 = 0.;
     T xN = 1.;
-    T yN = 1.;
 
     // Spacing and its square
     T h;
@@ -57,10 +56,12 @@ class Jacobi {
     Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> new_local_grid;
     unsigned int first_row;
 
+    public:
     // MPI Variables are members since it is a parallel solver
     int rank;
     int size;
 
+    private:
     // Boundary Condition
     BoundaryCondition<T> bc;
 
@@ -70,14 +71,18 @@ class Jacobi {
     // Save the error
     T error = 0.;
 
+    // Save the number of iteration
+    unsigned int it = 0;
+
     public:
-    Jacobi(unsigned int maxIt=1e3, T tol=1e-6, unsigned int N=11) : maxIt(maxIt), tol(tol), N(N), grid(N,N){
+    // The user gives me the number of intervals he wants, so the number of points is N+1
+    Jacobi(unsigned int maxIt=1e4, T tol=1e-20, unsigned int N=11) : maxIt(maxIt), tol(tol), N(N), grid(N,N){
         // Initialize MPI variables
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
         MPI_Comm_size(MPI_COMM_WORLD, &size);
 
         grid.setZero();
-        h = (xN-x0)/N; //se lo lasci così lo spacing è omogeneo lungo x e y
+        h = (xN-x0)/(N-1); //se lo lasci così lo spacing è omogeneo lungo x e y
         h_2 = h*h;
 
         // Create local grid: rows block partitioned
@@ -157,7 +162,8 @@ class Jacobi {
 
         // Jacobi iteration
         bool go_on = true;
-        for (unsigned int it = 0; go_on; ++it) {
+        it = 0;
+        for (; go_on; ++it) {
             communicate_rows(local_grid);
             
             // if (rank==0) I shouldn't touch the first row and the first and last columns
@@ -201,20 +207,10 @@ class Jacobi {
     }
 
     void print() const {
-        //std::cout << grid << std::endl;
-
-        // Print the local matrix in order w.r.t. rank number
-        for (int i = 0; i < size; ++i) {
-            if (rank == i) {
-                std::cout << "Rank " << rank << std::endl;
-                std::cout << new_local_grid << std::endl;
-            }
-            MPI_Barrier(MPI_COMM_WORLD);
-        }
-        std::cout << std::endl;
-        // Print the global matrix only from rank 0
-        if (rank == 0) {
-            std::cout << "Entire grid" << grid << std::endl;
+        if(rank==0){
+            std::cout << "The solution is:" << grid << std::endl;
+            std::cout << "The error is: " << error << std::endl;
+            std::cout << "The number of iteration performed is: " << it << std::endl;
         }
     }
 
