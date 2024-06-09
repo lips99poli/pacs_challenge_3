@@ -7,6 +7,8 @@
 #include <functional>
 #include "mpi.h"
 #include <concepts>
+#include <set>
+#include <map>
 
 /* da fare: 
 - griglia della funzione così non la devo chiamare ed eseguire ogni volta!!
@@ -20,16 +22,30 @@
 
 template <typename T>
 struct BoundaryCondition{
-    unsigned int grid_row=100;
-    unsigned int grid_col=100;
+    // When defining the the boundary condition the user is obliged to provide a function for each boundary, then if he doesn't give a second argument the default is (since the implementation is only for square grids)
+    // Nord, Sud, Est, Ovest with the entire edge of the square.
+    // If he wants to customize it he has to send also a map with the indexes grouped by the boundary name
 
-    std::function<T(unsigned int i, unsigned int j)> nord=nullptr;
-    std::function<T(unsigned int i, unsigned int j)> est=nullptr;
-    std::function<T(unsigned int i, unsigned int j)> sud=nullptr;
-    std::function<T(unsigned int i, unsigned int j)> ovest=nullptr;
+    // I need also the dimension of the grid
+    unsigned int N;
+    
+    std::map<std::string,std::function<T(T,T)>> boundary_functions;
+    std::map<std::string,std::set<std::pair<unsigned int, unsigned int>>> boundary_indexes;
 
-    BoundaryCondition(unsigned int grid_row, unsigned int grid_col, std::function<T(unsigned int i, unsigned int j)> nord, std::function<T(unsigned int i, unsigned int j)> est, std::function<T(unsigned int i, unsigned int j)> sud, std::function<T(unsigned int i, unsigned int j)> ovest) : grid_row(grid_row), grid_col(grid_col), nord(nord), est(est), sud(sud), ovest(ovest){};
     BoundaryCondition() = default;
+
+    BoundaryCondition(unsigned int N, std::map<std::string,std::function<T(T,T)>> boundary_functions, std::map<std::string,std::set<std::pair<unsigned int, unsigned int>>> boundary_indexes = {}): 
+                        N(N), boundary_functions(boundary_functions), boundary_indexes(boundary_indexes){
+                            // if the user doesn't provide boundaries_indexes definition, then the default is the entire edge of the square
+                            if(boundary_indexes.empty()){
+                                for(std::size_t i=0; i<N; ++i){
+                                    boundary_indexes["Nord"].insert({0,i});
+                                    boundary_indexes["Sud"].insert({N-1,i});
+                                    boundary_indexes["Est"].insert({i,N-1});
+                                    boundary_indexes["Ovest"].insert({i,0});
+                                }
+                            }
+                        };
 };
 
 template <typename T>
@@ -56,12 +72,10 @@ class Jacobi {
     Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> new_local_grid;
     unsigned int first_row;
 
-    public:
     // MPI Variables are members since it is a parallel solver
     int rank;
     int size;
 
-    private:
     // Boundary Condition
     BoundaryCondition<T> bc;
 
@@ -86,9 +100,9 @@ class Jacobi {
 
     void print() const {
         if(rank==0){
-            std::cout << "The solution is:" << grid << std::endl;
-            std::cout << "The error is: " << error << std::endl;
-            std::cout << "The number of iteration performed is: " << it << std::endl;
+            std::cout << "Solution:\n" << grid << std::endl;
+            std::cout << "Relative error: " << error << std::endl;
+            std::cout << "Number of iteration performed: " << it << std::endl;
         }
     }
 
@@ -98,14 +112,14 @@ class Jacobi {
 
     void communicate_rows(Eigen::Matrix<T,Eigen::Dynamic,Eigen::Dynamic, Eigen::RowMajor>& local_grid);
 
-    bool check_convergence(const Eigen::Matrix<T,Eigen::Dynamic,Eigen::Dynamic,Eigen::RowMajor>& new_local_grid)const;
+    bool check_convergence(const Eigen::Matrix<T,Eigen::Dynamic,Eigen::Dynamic,Eigen::RowMajor>& new_local_grid);
 
 };
 
 // Implementation of the Jacobi class
 
 template <typename T>
-Jacobi<T>::Jacobi(unsigned int maxIt=1e4, T tol=1e-20, unsigned int N=11) : maxIt(maxIt), tol(tol), N(N), grid(N,N){
+Jacobi<T>::Jacobi(unsigned int maxIt, T tol, unsigned int N) : maxIt(maxIt), tol(tol), N(N), grid(N,N){
     // Initialize MPI variables
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
@@ -122,7 +136,6 @@ Jacobi<T>::Jacobi(unsigned int maxIt=1e4, T tol=1e-20, unsigned int N=11) : maxI
     if (rank==0 || rank==size-1) --local_rows;
 
     first_row = N-(N/size * rank + std::min(rank, static_cast<int> (N%size)));
-    std::cout<< "Rank: " << rank << " first_row: " << first_row << std::endl;
     
     local_grid.resize(local_rows, N);
     local_grid.setZero();
@@ -180,6 +193,25 @@ void Jacobi<T>::setBoundaryCondition(BoundaryCondition<T>& bc){
     new_local_grid = local_grid;
 };
 
+template <typename T>
+void Jacobi<T>::apply_boundary_condtion(){ //not efficient but general, it has to be run only at the definition of the problem, no need of more run.
+    // Recall that in local_grid there are also row_above and row_under, so ignore them with proper indexing
+    for(unsigned int i_loc=0; i_loc<local_grid.rows(); ++i_loc){
+        for (unsigned int j=0; j<local_grid.cols(); ++j){
+            unsigned int i = first_row - i_loc - 1;
+            // if i am not on the edges i skip
+            if(i!=0 && j!=0 && i!=N-1 && j!=N-1) continue;
+            
+             // find the index corresponding boundary 
+            for(const auto& boundary : bc.boundary_indexes){
+                if(boundary.second.find({i, j}) != boundary.second.end()){
+                    local_grid(i_loc,j) = bc.boundary_functions[boundary.first](i*h,j*h);
+                }
+            }
+        }
+    }
+}
+
 // Solve the problem
 template <typename T>
 void Jacobi<T>::solve(){
@@ -232,24 +264,7 @@ void Jacobi<T>::solve(){
     MPI_Allgatherv(local_grid.data() + offset, sendcounts[rank], MPI_DOUBLE, grid.data(), sendcounts.data(), displs.data(), MPI_DOUBLE, MPI_COMM_WORLD);
 }
 
-template <typename T>
-void Jacobi<T>::apply_boundary_condtion(){
-    // Recall that in local_grid there are also row_above and row_under, so ignore them with proper indexing
-    for(unsigned int i=1; i<local_grid.rows()-1; ++i){ // Est Ovest
-        local_grid(i,0) = 0.;
-        local_grid(i,local_grid.cols()-1) = 0.;
-    }
-    // Moreover we have upper and lower boundaries
-    if(rank==size-1){// Nord
-        for(unsigned int j=0; j<local_grid.cols(); ++j){
-            local_grid(0,j) = 0.;
-        }
-    }else if(rank==0){// Sud
-        for(unsigned int j=0; j<local_grid.cols(); ++j){
-            local_grid(local_grid.rows()-1,j) = 0.;
-        }
-    }
-}
+
 
 template <typename T>
 void Jacobi<T>::communicate_rows(Eigen::Matrix<T,Eigen::Dynamic,Eigen::Dynamic, Eigen::RowMajor>& local_grid){
@@ -292,7 +307,7 @@ void Jacobi<T>::communicate_rows(Eigen::Matrix<T,Eigen::Dynamic,Eigen::Dynamic, 
 };
 
 template <typename T>
-bool Jacobi<T>::check_convergence(const Eigen::Matrix<T,Eigen::Dynamic,Eigen::Dynamic,Eigen::RowMajor>& new_local_grid) const{
+bool Jacobi<T>::check_convergence(const Eigen::Matrix<T,Eigen::Dynamic,Eigen::Dynamic,Eigen::RowMajor>& new_local_grid){
     error = 0.;
     
     // Compute the error, i don't need to check the first and last row because they are either boundary conditions or they are updated by other ranks
