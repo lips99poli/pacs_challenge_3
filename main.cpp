@@ -31,17 +31,17 @@ int main(int argc, char** argv){
     j.print();
 
     // rank 0 will construct and print the solution
-    std::cout<<std::endl;
-    if(rank == 0){
-        Eigen::MatrixXd solution(N, N);
-        std::cout << "Solution: " << std::endl;
-        for(unsigned int i = 0; i < N; i++){
-            for(unsigned int j = 0; j < N; j++){
-                solution(i, j) = u(i/(N-1.), j/(N-1.));
-            }
-        }
-        std::cout << solution << std::endl;
-    }
+    // std::cout<<std::endl;
+    // if(rank == 0){
+    //     Eigen::MatrixXd solution(N, N);
+    //     std::cout << "Solution: " << std::endl;
+    //     for(unsigned int i = 0; i < N; i++){
+    //         for(unsigned int j = 0; j < N; j++){
+    //             solution(i, j) = u(i/(N-1.), j/(N-1.));
+    //         }
+    //     }
+    //     std::cout << solution << std::endl;
+    // }
 
     MPI_Finalize();
     return 0;

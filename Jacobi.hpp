@@ -20,15 +20,17 @@
 - aggiungere soluzione alternativa di comunicazione con sendrecv
 */
 
+
+// The template parameter is useful to define the precision of the solver
 template <typename T>
 struct BoundaryCondition{
-    // When defining the the boundary condition the user is obliged to provide a function for each boundary, then if he doesn't give a second argument the default is (since the implementation is only for square grids)
+    // When defining the the boundary condition the user is obliged to provide a function for each boundary, then if he doesn't give a second argument the default is a square (since the implementation is only for square grids)
     // Nord, Sud, Est, Ovest with the entire edge of the square.
     // If he wants to customize it he has to send also a map with the indexes grouped by the boundary name
 
     // I need also the dimension of the grid
     unsigned int N;
-    
+
     std::map<std::string,std::function<T(T,T)>> boundary_functions;
     std::map<std::string,std::set<std::pair<unsigned int, unsigned int>>> boundary_indexes;
 
@@ -54,7 +56,7 @@ class Jacobi {
     // Solver parameters: maximum number of iteration, tolerance and number of points
     unsigned int maxIt;
     T tol;
-    unsigned int N; 
+    unsigned int N;
 
     // Edge of the grid (hp that it is a square grid)
     T x0 = 0.;
@@ -145,6 +147,7 @@ Jacobi<T>::Jacobi(unsigned int maxIt, T tol, unsigned int N) : maxIt(maxIt), tol
     local_function_grid.resize(function_local_rows, N-2);
 }
 
+
 template <typename T>
 void Jacobi<T>::setFunction(std::function<T(T,T)> f){
     this->f = f;
@@ -191,7 +194,8 @@ void Jacobi<T>::setBoundaryCondition(BoundaryCondition<T>& bc){
 
     // We need a container with the updates
     new_local_grid = local_grid;
-};
+}
+
 
 template <typename T>
 void Jacobi<T>::apply_boundary_condtion(){ //not efficient but general, it has to be run only at the definition of the problem, no need of more run.
@@ -212,12 +216,14 @@ void Jacobi<T>::apply_boundary_condtion(){ //not efficient but general, it has t
     }
 }
 
+
 // Solve the problem
 template <typename T>
 void Jacobi<T>::solve(){
     unsigned int cols = local_grid.cols();
     unsigned int local_rows = local_grid.rows();
 
+    // Why I don't do first iteration outside the loop?
     // The goal is performance: in the first iteration i don't need any comuncation, which is needed at the beginning of every iteration, AFTER THE CONVERGENCE CHECK!
     // In order to avoid useless communication i want to do the for loop starting with the communication and then perform updates and finally check convergence. But since the 
     // the first communication is useless I perform the first iteration outside and then enter the loop
@@ -234,6 +240,7 @@ void Jacobi<T>::solve(){
         // First and rows are never changed in any rank because either they are boundaries (rank 0, size-1) or they are row_above/row_under, so they are updated by other ranks
         // Recall that the function_grid doesn't have the 4 edges of the square so when calling it with indexing of the real grid i should subtract one. Moreover i should know what row each rank is starting from
 
+        #pragma omp parallel for collapse(2)
         for (Eigen::Index i=1; i<local_rows-1; ++i) {
             for (Eigen::Index j=1; j<cols-1; ++j) {
                 // Update
@@ -263,8 +270,6 @@ void Jacobi<T>::solve(){
     // Copy the local grid to the global grid
     MPI_Allgatherv(local_grid.data() + offset, sendcounts[rank], MPI_DOUBLE, grid.data(), sendcounts.data(), displs.data(), MPI_DOUBLE, MPI_COMM_WORLD);
 }
-
-
 
 template <typename T>
 void Jacobi<T>::communicate_rows(Eigen::Matrix<T,Eigen::Dynamic,Eigen::Dynamic, Eigen::RowMajor>& local_grid){
